@@ -20,12 +20,16 @@ enum pipe;
 
 #define HISTOGRAM_BIN_COUNT                    32
 #define HISTOGRAM_IET_LENGTH                   33
+/* Fallback when the frame time of the mode is not known */
+#define HISTOGRAM_IET_WRITE_DELAY_MS           16
 
 struct intel_histogram {
 	struct drm_histogram_caps *caps;
 	struct drm_iet_caps *iet_caps;
 	struct intel_crtc *crtc;
 	struct delayed_work work;
+	/* Writes one IET entry per frame */
+	struct delayed_work iet_work;
 	bool enable;
 	bool can_enable;
 	u32 bin_data[HISTOGRAM_BIN_COUNT];
@@ -35,6 +39,8 @@ struct intel_histogram {
 	/* Kernel copy of the IET LUT captured during atomic_check (user ctx). */
 	u32 *iet_lut_data;
 	u32 iet_lut_nr;
+	/* Index of the next IET entry to be written */
+	u32 iet_next;
 	u32 level;
 };
 
@@ -58,6 +64,7 @@ int intel_histogram_capture_iet_lut(struct intel_crtc *intel_crtc,
 int intel_histogram_update(struct intel_crtc *intel_crtc,
 			   struct drm_histogram_config *config);
 int intel_histogram_set_iet_lut(struct intel_crtc *intel_crtc);
+void intel_histogram_flip(struct intel_crtc *intel_crtc);
 int intel_histogram_init(struct intel_crtc *intel_crtc);
 void intel_histogram_finish(struct intel_crtc *intel_crtc);
 int intel_histogram_sf_update_seg(struct intel_crtc *intel_crtc, struct intel_dsb *dsb);

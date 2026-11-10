@@ -322,7 +322,7 @@ int intel_histogram_capture_iet_lut(struct intel_crtc *intel_crtc,
 	iet = (struct drm_iet_1dlut_sample *)blob->data;
 	nr = iet->nr_elements;
 
-	if (nr == 0 || nr > HISTOGRAM_IET_LENGTH + 1)
+	if (nr == 0 || nr % (HISTOGRAM_IET_LENGTH + 1))
 		return -EINVAL;
 
 	data = kcalloc(nr, sizeof(*data), GFP_KERNEL);
@@ -338,9 +338,12 @@ int intel_histogram_capture_iet_lut(struct intel_crtc *intel_crtc,
 		return -EFAULT;
 	}
 
+	/* A new LUT supersedes any entries still waiting to be written */
+	cancel_delayed_work_sync(&histogram->iet_work);
 	kfree(histogram->iet_lut_data);
 	histogram->iet_lut_data = data;
 	histogram->iet_lut_nr = nr;
+	histogram->iet_next = 0;
 
 	return 0;
 }
@@ -468,6 +471,7 @@ static void intel_histogram_disable(struct intel_crtc *intel_crtc)
 	intel_de_rmw(display, PIPE_MISC(pipe), PIPE_MISC_DITHER_ENABLE, 0);
 
 	cancel_delayed_work(&histogram->work);
+	cancel_delayed_work(&histogram->iet_work);
 	histogram->enable = false;
 }
 
@@ -489,33 +493,50 @@ int intel_histogram_update(struct intel_crtc *intel_crtc,
 	return 0;
 }
 
-int intel_histogram_set_iet_lut(struct intel_crtc *intel_crtc)
+/* One IET entry is written per frame, the frame time depends on the panel's refresh rate */
+static unsigned long iet_write_delay(struct intel_crtc *intel_crtc)
 {
-	struct intel_histogram *histogram = intel_crtc->histogram;
+	const struct drm_display_mode *mode =
+		&intel_crtc->config->hw.adjusted_mode;
+	u64 frame_us;
+
+	if (!mode->crtc_clock)
+		return msecs_to_jiffies(HISTOGRAM_IET_WRITE_DELAY_MS);
+
+	/* crtc_clock is in kHz */
+	frame_us = div_u64(mul_u32_u32(mode->crtc_htotal, mode->crtc_vtotal) * 1000ULL,
+			   mode->crtc_clock);
+
+	return usecs_to_jiffies(frame_us);
+}
+
+/*
+ * Delayed work: program the next IET entry (HISTOGRAM_IET_LENGTH LUT values
+ * followed by the backlight percentage computed by the algorithm) and
+ * re-arm for the following entry, one entry per frame.
+ */
+static void write_iet_lut_data(struct work_struct *work)
+{
+	struct intel_histogram *histogram =
+		container_of(to_delayed_work(work), struct intel_histogram, iet_work);
+	struct intel_crtc *intel_crtc = histogram->crtc;
 	struct intel_display *display = to_intel_display(intel_crtc);
 	struct intel_encoder *encoder = NULL;
 	struct intel_connector *connector = NULL;
 	struct intel_dp *intel_dp = NULL;
 	int pipe = intel_crtc->pipe;
-	u32 *data;
-	u32 level;
+	u32 nr_entries, level;
+	u32 *entry;
 
-	if (!histogram)
-		return -EINVAL;
+	if (!histogram->enable || !histogram->iet_lut_data)
+		return;
 
-	if (!histogram->enable) {
-		drm_err(display->drm, "histogram not enabled");
-		return -EINVAL;
-	}
+	/* Each IET entry is HISTOGRAM_IET_LENGTH LUT values + 1 backlight value */
+	nr_entries = histogram->iet_lut_nr / (HISTOGRAM_IET_LENGTH + 1);
+	if (histogram->iet_next >= nr_entries)
+		return;
 
-	/* LUT was captured from userspace in atomic_check (user context). */
-	data = histogram->iet_lut_data;
-	if (!data) {
-		drm_err(display->drm,
-			"IET LUT not captured (data=%p)\n", data);
-		return -EINVAL;
-	}
-
+	entry = &histogram->iet_lut_data[histogram->iet_next * (HISTOGRAM_IET_LENGTH + 1)];
 
 	if (DISPLAY_VER(display) < 20) {
 		/* Set DPST_CTL Bin Reg function select to IE & wait for a vblabk */
@@ -536,13 +557,12 @@ int intel_histogram_set_iet_lut(struct intel_crtc *intel_crtc)
 		intel_de_write_fw(display, LGC_PALETTE(pipe, 0), val);
 	}
 
-	write_iet(display, pipe, data);
+	write_iet(display, pipe, entry);
 
-	if (intel_dp && intel_dp_is_edp(intel_dp) &&
-	    histogram->iet_lut_nr == (HISTOGRAM_IET_LENGTH + 1)) {
+	if (intel_dp && intel_dp_is_edp(intel_dp)) {
 		connector = intel_dp->attached_connector;
 
-		level = DIV_ROUND_CLOSEST((data[histogram->iet_lut_nr - 1] *
+		level = DIV_ROUND_CLOSEST((entry[HISTOGRAM_IET_LENGTH] *
 					   histogram->level), 10000);
 
 		if (!intel_dp_in_hdr_mode(connector->base.state))
@@ -550,11 +570,55 @@ int intel_histogram_set_iet_lut(struct intel_crtc *intel_crtc)
 							      level);
 	}
 
-	kfree(histogram->iet_lut_data);
-	histogram->iet_lut_data = NULL;
-	histogram->iet_lut_nr = 0;
+	if (++histogram->iet_next < nr_entries) {
+		queue_delayed_work(display->wq.unordered, &histogram->iet_work,
+				   iet_write_delay(intel_crtc));
+	} else {
+		kfree(histogram->iet_lut_data);
+		histogram->iet_lut_data = NULL;
+		histogram->iet_lut_nr = 0;
+		histogram->iet_next = 0;
+	}
+}
+
+int intel_histogram_set_iet_lut(struct intel_crtc *intel_crtc)
+{
+	struct intel_histogram *histogram = intel_crtc->histogram;
+	struct intel_display *display = to_intel_display(intel_crtc);
+
+	if (!histogram)
+		return -EINVAL;
+
+	if (!histogram->enable) {
+		drm_err(display->drm, "histogram not enabled");
+		return -EINVAL;
+	}
+
+	if (!histogram->iet_lut_data) {
+		drm_err(display->drm, "IET LUT not captured\n");
+		return -EINVAL;
+	}
+
+	histogram->iet_next = 0;
+	mod_delayed_work(display->wq.unordered, &histogram->iet_work, 0);
+	/* Complete this entry as part of the commit */
+	flush_delayed_work(&histogram->iet_work);
 
 	return 0;
+}
+
+/* On a flip without a new LUT, write the next pending entry along with it */
+void intel_histogram_flip(struct intel_crtc *intel_crtc)
+{
+	struct intel_histogram *histogram = intel_crtc->histogram;
+	struct intel_display *display = to_intel_display(intel_crtc);
+
+	if (!histogram || !histogram->enable || !histogram->iet_lut_data)
+		return;
+
+	mod_delayed_work(display->wq.unordered, &histogram->iet_work, 0);
+	/* Complete this entry as part of the commit */
+	flush_delayed_work(&histogram->iet_work);
 }
 
 void intel_histogram_finish(struct intel_crtc *intel_crtc)
@@ -562,6 +626,7 @@ void intel_histogram_finish(struct intel_crtc *intel_crtc)
 	struct intel_histogram *histogram = intel_crtc->histogram;
 
 	cancel_delayed_work_sync(&histogram->work);
+	cancel_delayed_work_sync(&histogram->iet_work);
 	kfree(histogram->iet_lut_data);
 	kfree(histogram);
 }
@@ -604,6 +669,7 @@ int intel_histogram_init(struct intel_crtc *crtc)
 
 	INIT_DEFERRABLE_WORK(&histogram->work,
 			     intel_histogram_handle_int_work);
+	INIT_DELAYED_WORK(&histogram->iet_work, write_iet_lut_data);
 
 	return 0;
 }
