@@ -57,8 +57,7 @@ int intel_histogram_capture_iet_lut(struct intel_crtc *intel_crtc,
 				    struct drm_property_blob *blob);
 int intel_histogram_update(struct intel_crtc *intel_crtc,
 			   struct drm_histogram_config *config);
-int intel_histogram_set_iet_lut(struct intel_crtc *intel_crtc,
-				struct drm_property_blob *blob);
+int intel_histogram_set_iet_lut(struct intel_crtc *intel_crtc);
 int intel_histogram_init(struct intel_crtc *intel_crtc);
 void intel_histogram_finish(struct intel_crtc *intel_crtc);
 int intel_histogram_sf_update_seg(struct intel_crtc *intel_crtc, struct intel_dsb *dsb);

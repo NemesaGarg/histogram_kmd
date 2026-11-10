@@ -489,8 +489,7 @@ int intel_histogram_update(struct intel_crtc *intel_crtc,
 	return 0;
 }
 
-int intel_histogram_set_iet_lut(struct intel_crtc *intel_crtc,
-				struct drm_property_blob *blob)
+int intel_histogram_set_iet_lut(struct intel_crtc *intel_crtc)
 {
 	struct intel_histogram *histogram = intel_crtc->histogram;
 	struct intel_display *display = to_intel_display(intel_crtc);

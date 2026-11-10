@@ -7704,7 +7704,7 @@ static void intel_atomic_commit_tail(struct intel_atomic_state *state)
 					       (struct drm_histogram_config *)
 					       new_crtc_state->uapi.histogram_enable->data);
 		if (new_crtc_state->uapi.iet_lut_updated)
-			intel_histogram_set_iet_lut(crtc, new_crtc_state->uapi.iet_lut);
+			intel_histogram_set_iet_lut(crtc);
 	}
 
 	/* Underruns don't always raise interrupts, so check manually */
