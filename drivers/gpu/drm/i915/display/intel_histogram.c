@@ -600,8 +600,7 @@ int intel_histogram_set_iet_lut(struct intel_crtc *intel_crtc)
 	}
 
 	histogram->iet_next = 0;
-	mod_delayed_work(display->wq.unordered, &histogram->iet_work, 0);
-	/* Complete this entry as part of the commit */
+	queue_delayed_work(display->wq.unordered, &histogram->iet_work, 0);
 	flush_delayed_work(&histogram->iet_work);
 
 	return 0;
@@ -611,13 +610,10 @@ int intel_histogram_set_iet_lut(struct intel_crtc *intel_crtc)
 void intel_histogram_flip(struct intel_crtc *intel_crtc)
 {
 	struct intel_histogram *histogram = intel_crtc->histogram;
-	struct intel_display *display = to_intel_display(intel_crtc);
 
 	if (!histogram || !histogram->enable || !histogram->iet_lut_data)
 		return;
 
-	mod_delayed_work(display->wq.unordered, &histogram->iet_work, 0);
-	/* Complete this entry as part of the commit */
 	flush_delayed_work(&histogram->iet_work);
 }
 
