@@ -194,6 +194,8 @@ static void intel_histogram_handle_int_work(struct work_struct *work)
 	u32 gbandthreshold = 0;
 	u8 gbanddelay = 0;
 
+	cancel_delayed_work_sync(&histogram->iet_work);
+
 	event[0] = "HISTOGRAM=1";
 	event[1] = kasprintf(GFP_KERNEL, "PIPE=%d", intel_crtc->pipe);
 	event[2] = NULL;
@@ -295,6 +297,8 @@ void intel_histogram_irq_handler(struct intel_display *display, enum pipe pipe)
 			"Spurious interrupt, histogram not enabled\n");
 		return;
 	}
+
+	cancel_delayed_work(&histogram->iet_work);
 
 	queue_delayed_work(display->wq.unordered,
 			   &histogram->work, 0);
