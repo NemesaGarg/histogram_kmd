@@ -138,7 +138,7 @@ static bool intel_histogram_get_data(struct intel_crtc *intel_crtc)
 		intel_de_rmw(display, DPST_CTL(intel_crtc->pipe),
 			     DPST_CTL_BIN_REG_FUNC_SEL | DPST_CTL_BIN_REG_MASK, 0);
 
-	for (index = 0; index < ARRAY_SIZE(histogram->bin_data); index++) {
+	for (index = 0; index < HISTOGRAM_BIN_COUNT; index++) {
 		dpstbin = intel_de_read(display, (DISPLAY_VER(display) >= 20 ?
 					DPST_HIST_BIN(intel_crtc->pipe) :
 					DPST_BIN(intel_crtc->pipe)));
@@ -152,6 +152,13 @@ static bool intel_histogram_get_data(struct intel_crtc *intel_crtc)
 			return false;
 		}
 	}
+
+	/*
+	 * Last element is the index of the next IET entry to be written, i.e.
+	 * where the IET LUT write got interrupted by this histogram.
+	 */
+	histogram->bin_data[HISTOGRAM_BIN_COUNT] = histogram->iet_next;
+
 	return true;
 }
 
@@ -476,6 +483,7 @@ static void intel_histogram_disable(struct intel_crtc *intel_crtc)
 
 	cancel_delayed_work(&histogram->work);
 	cancel_delayed_work(&histogram->iet_work);
+	histogram->iet_next = 0;
 	histogram->enable = false;
 }
 
@@ -581,7 +589,6 @@ static void write_iet_lut_data(struct work_struct *work)
 		kfree(histogram->iet_lut_data);
 		histogram->iet_lut_data = NULL;
 		histogram->iet_lut_nr = 0;
-		histogram->iet_next = 0;
 	}
 }
 

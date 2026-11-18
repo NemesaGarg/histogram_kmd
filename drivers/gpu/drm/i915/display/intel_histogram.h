@@ -32,7 +32,8 @@ struct intel_histogram {
 	struct delayed_work iet_work;
 	bool enable;
 	bool can_enable;
-	u32 bin_data[HISTOGRAM_BIN_COUNT];
+	/* Last element carries the index of the next IET entry to be written */
+	u32 bin_data[HISTOGRAM_BIN_COUNT + 1];
 	u32 gbandthreshold;
 	u16 seg_size;
 	u8 gbanddelay;
